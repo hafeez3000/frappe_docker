@@ -1,5 +1,49 @@
 # Contribution Guidelines
 
+> **Important:** All development work must be done in the `tooling/` folder (frappe-docker-dev worktree). Direct edits to the root directory are not allowed.
+
+## Development Workflow
+
+This repository uses git worktrees for development:
+
+| Path | Branch | Purpose |
+|------|--------|---------|
+| `frappe_docker/` | `main` | Frappe Docker fork (synced with upstream) |
+| `tooling/` | `frappe-docker-dev` | **Full development environment** (use this!) |
+| `tooling-clean/` | `tooling` | Clean tooling scripts only |
+
+### Why This Workflow?
+
+1. The `main` branch is kept in sync with upstream frappe_docker
+2. All development happens in `tooling/` on the `frappe-docker-dev` branch
+3. The `tooling/` worktree contains both frappe_docker files and your tooling scripts
+
+### Making Changes
+
+```bash
+# Always work in the tooling folder
+cd tooling
+
+# Make your changes, then commit
+git add .
+git commit -m "your changes"
+
+# Push to your development branch
+git push origin frappe-docker-dev
+```
+
+### Syncing with Upstream
+
+```bash
+# In frappe_docker/ (main branch)
+git fetch upstream
+git merge upstream/main
+
+# Changes will be reflected in tooling/ worktree automatically
+```
+
+---
+
 Before publishing a PR, please test builds locally.
 
 On each PR that contains changes relevant to Docker builds, images are being built and tested in our CI (GitHub Actions).
