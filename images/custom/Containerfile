@@ -149,6 +149,9 @@ USER frappe
 
 COPY --from=builder --chown=frappe:frappe /home/frappe/frappe-bench /home/frappe/frappe-bench
 
+# Copy frontend .env.local for challenges app
+COPY --chown=frappe:frappe resources/core/env-local /home/frappe/frappe-bench/apps/challenges/frontend/.env.local
+
 WORKDIR /home/frappe/frappe-bench
 
 # Move assets to image-layer storage
