@@ -1,2 +1,5 @@
-NEXT_PUBLIC_FRAPPE_URL=http://one.example.localhost
+# NEXT_PUBLIC_FRAPPE_URL: Overridden at runtime by compose.challenges.yaml
+# to point to the challenges nginx proxy, which forwards API calls to frappe
+# with the correct Host header (one.example.localhost).
+NEXT_PUBLIC_FRAPPE_URL=http://challenges.example.localhost
 NEXT_PUBLIC_FRONTEND_URL=http://challenges.example.localhost

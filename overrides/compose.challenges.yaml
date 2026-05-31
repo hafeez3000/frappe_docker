@@ -1,0 +1,150 @@
+# Challenges Next.js application service override for erpnext-one compose stack.
+# Uses custom:16 which has the challenges Next.js source at
+# /home/frappe/frappe-bench/apps/challenges/frontend.
+# The Next.js app is built at container startup (npm install && npx next build).
+#
+# To rebuild custom:16:
+#   ./scripts/build/build-image.sh
+
+services:
+  challenges:
+    image: ${CHALLENGES_IMAGE:-custom}:${CHALLENGES_TAG:-16}
+    restart: unless-stopped
+    entrypoint: []
+    command:
+      - sh
+      - -c
+      - |
+        . /home/frappe/.nvm/nvm.sh &&
+        cd /home/frappe/frappe-bench/apps/challenges/frontend &&
+        # Wait for frappe backend to be ready (needed for SSR during build)
+        for i in $$(seq 1 30); do
+          curl -sf http://erpnext-one-frontend-1:8080/api/method/version >/dev/null 2>&1 && break
+          sleep 1
+        done &&
+        # Create frappe proxy config that adds the correct Host header for API calls
+        # This proxies /api/ calls to frappe with Host header set to one.example.localhost
+        cat > /tmp/frappe-proxy.conf << 'EOF'
+upstream frappe-backend {
+    server erpnext-one-frontend-1:8080;
+}
+server {
+    listen 9080;
+    server_name _;
+    # Proxy API calls to frappe with correct Host header
+    location /api/ {
+        rewrite ^/api(.*)$ $1 break;
+        proxy_pass http://frappe-backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host one.example.localhost;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto http;
+    }
+}
+EOF
+        nginx -c /tmp/frappe-proxy.conf &
+        sed -i '/turbopack: {/,/},/d' next.config.ts &&
+        grep -q 'export const dynamic = "force-dynamic"' src/app/registration/page.tsx || \
+          sed -i '/export const revalidate/a export const dynamic = "force-dynamic";' src/app/registration/page.tsx &&
+        npm install --no-audit &&
+        npx next build &&
+        npx next start -p 3000 --keepAliveTimeout 65000 &
+        sleep 1 &&
+        for i in $$(seq 1 30); do
+          curl -sf http://127.0.0.1:3000/ >/dev/null 2>&1 && break
+          sleep 0.5
+        done &&
+        # Kill entrypoint's nginx (if running) and start challenges reverse-proxy
+        if [ -f /run/nginx.pid ] && kill -0 "$(cat /run/nginx.pid)" 2>/dev/null; then
+          kill -QUIT "$(cat /run/nginx.pid)"; sleep 1
+        fi &&
+        # Start challenges nginx - serves static files and proxies API to frappe proxy
+        cat > /tmp/challenges-nginx.conf << 'EOF'
+upstream frappe-proxy {
+    server 127.0.0.1:9080;
+}
+upstream nextjs {
+    server 127.0.0.1:3000;
+}
+server {
+    listen 8080;
+    server_name _;
+    access_log /dev/stdout;
+    error_log /dev/stderr;
+    location /healthz {
+        return 200 "OK\n";
+        add_header Content-Type text/plain;
+    }
+    # API calls go to frappe proxy (which adds correct Host header)
+    location /api/ {
+        proxy_pass http://frappe-proxy/api/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    # Static files from Next.js build
+    location /_next/static/ {
+        proxy_pass http://nextjs;
+        proxy_cache_valid 200 60m;
+        add_header Cache-Control "public, immutable";
+    }
+    # Public assets
+    location /public/ {
+        proxy_pass http://nextjs;
+    }
+    # All other requests go to Next.js
+    location / {
+        proxy_pass http://nextjs;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+EOF
+        nginx -c /tmp/challenges-nginx.conf &
+        wait
+    environment:
+      - FRAPPE_SITE_NAME_HEADER=${CHALLENGES_DOMAIN}
+      - BACKEND=${BACKEND:-http://backend:8000}
+      - NEXT_PUBLIC_BACKEND_URL=${BACKEND:-http://backend:8000}
+      # Use frappe nginx (port 8080) for API calls - it handles site routing via Host header
+      # The challenges container is on the erpnext-one network, so it can reach frontend:8080
+      # Frappe API URL - used by Next.js for API calls
+      # API calls go through the challenges nginx which proxies to frappe with correct Host header
+      - NEXT_PUBLIC_FRAPPE_URL=${NEXT_PUBLIC_FRAPPE_URL:-http://challenges.example.localhost}
+      - NEXT_PUBLIC_FRONTEND_URL=${NEXT_PUBLIC_FRONTEND_URL:-http://challenges.example.localhost}
+      - NEXT_PUBLIC_ALLOWED_ORIGIN=http://${CHALLENGES_DOMAIN:-challenges.example.localhost}
+      - UPSTREAM_REAL_IP_ADDRESS=${UPSTREAM_REAL_IP_ADDRESS:-0.0.0.0}
+      - UPSTREAM_REAL_IP_HEADER=${UPSTREAM_REAL_IP_HEADER:-X-Forwarded-For}
+      - UPSTREAM_REAL_IP_RECURSIVE=${UPSTREAM_REAL_IP_RECURSIVE:-off}
+      - PROXY_READ_TIMEOUT=${PROXY_READ_TIMEOUT:-120}
+      - CLIENT_MAX_BODY_SIZE=${CLIENT_MAX_BODY_SIZE:-50m}
+      - HOSTNAME=0.0.0.0
+      - PORT=3000
+    labels:
+      - traefik.enable=${CHALLENGES_TRAEFIK:-true}
+      - traefik.docker.network=${CHALLENGES_TRAEFIK_NETWORK:-traefik-public}
+      - traefik.http.routers.challenges-public-http.rule=Host(`${CHALLENGES_DOMAIN}`)
+      - traefik.http.routers.challenges-public-http.entrypoints=http
+      - traefik.http.routers.challenges-public-http.service=challenges-service
+      - traefik.http.services.challenges-service.loadbalancer.server.port=8080
+    networks:
+      - traefik-public
+      - erpnext-one
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+networks:
+  traefik-public:
+    external: true
+  bench-network:
+    external: false
